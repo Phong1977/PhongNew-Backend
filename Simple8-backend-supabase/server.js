@@ -1,3 +1,29 @@
+// --- App ---
+const app = express();
+
+// Khai báo whitelist
+const ALLOWED_ORIGINS = [
+  'https://phongnews.netlify.app',
+  'http://localhost:5173',
+  'http://localhost:3000'
+];
+
+// 👉 CORS phải đứng TRƯỚC routes
+app.use(cors({
+  origin: (origin, cb) => (!origin || ALLOWED_ORIGINS.includes(origin)) ? cb(null, true) : cb(new Error('CORS')),
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization'],
+  credentials: true
+}));
+app.options('*', cors());
+
+// Parsers & logger (có thể để trước hoặc sau CORS, miễn là trước routes)
+app.use(express.json());
+app.use(morgan('tiny'));
+
+// 👉 Các ROUTES bắt đầu từ đây
+// app.use('/api/auth', authRouter);
+// ...
 
 // server.js — Supabase-backed storage
 const express = require('express');
