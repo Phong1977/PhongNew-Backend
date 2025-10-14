@@ -3,7 +3,6 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const cors = require('cors');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const morgan = require('morgan');
