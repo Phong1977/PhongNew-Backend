@@ -218,3 +218,17 @@ app.post('/api/auth/change-password', auth, async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Auth backend listening on :${PORT}`));
+const cors = require('cors');
+const ALLOWED_ORIGINS = [
+  'https://phongnews.netlify.app',
+  'http://localhost:5173',
+  'http://localhost:3000'
+];
+
+app.use(cors({
+  origin: (origin, cb) => (!origin || ALLOWED_ORIGINS.includes(origin)) ? cb(null, true) : cb(new Error('CORS')),
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization'],
+  credentials: true
+}));
+app.options('*', cors());
