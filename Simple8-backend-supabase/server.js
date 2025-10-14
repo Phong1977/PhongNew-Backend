@@ -1,5 +1,25 @@
 // --- App ---
 const app = express();
+// ===== CORS guard (đặt NGAY SAU const app = express();) =====
+const ALLOWED_ORIGINS = [
+  'https://phongnews.netlify.app',
+  'http://localhost:5173',
+  'http://localhost:3000'
+];
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin || 'https://phongnews.netlify.app');
+    res.header('Vary', 'Origin'); // để CDN/proxy không cache sai theo Origin
+    res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Credentials', 'true');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204); // trả preflight sớm
+  next();
+});
+// ===== HẾT: CORS guard =====
 
 // Khai báo whitelist
 const ALLOWED_ORIGINS = [
