@@ -1,51 +1,6 @@
-// --- App ---
-const app = express();
-// ===== CORS guard (đặt NGAY SAU const app = express();) =====
-const ALLOWED_ORIGINS = [
-  'https://phongnews.netlify.app',
-  'http://localhost:5173',
-  'http://localhost:3000'
-];
+// server.js — Supabase-backed auth API (CORS fixed, order cleaned)
 
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (!origin || ALLOWED_ORIGINS.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin || 'https://phongnews.netlify.app');
-    res.header('Vary', 'Origin'); // để CDN/proxy không cache sai theo Origin
-    res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.header('Access-Control-Allow-Credentials', 'true');
-  }
-  if (req.method === 'OPTIONS') return res.sendStatus(204); // trả preflight sớm
-  next();
-});
-// ===== HẾT: CORS guard =====
-
-// Khai báo whitelist
-const ALLOWED_ORIGINS = [
-  'https://phongnews.netlify.app',
-  'http://localhost:5173',
-  'http://localhost:3000'
-];
-
-// 👉 CORS phải đứng TRƯỚC routes
-app.use(cors({
-  origin: (origin, cb) => (!origin || ALLOWED_ORIGINS.includes(origin)) ? cb(null, true) : cb(new Error('CORS')),
-  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization'],
-  credentials: true
-}));
-app.options('*', cors());
-
-// Parsers & logger (có thể để trước hoặc sau CORS, miễn là trước routes)
-app.use(express.json());
-app.use(morgan('tiny'));
-
-// 👉 Các ROUTES bắt đầu từ đây
-// app.use('/api/auth', authRouter);
-// ...
-
-// server.js — Supabase-backed storage
+// ====== Imports & setup ======
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -53,10 +8,9 @@ const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const morgan = require('morgan');
 require('dotenv').config();
-
 const { createClient } = require('@supabase/supabase-js');
 
-// --- ENV ---
+// ====== ENV ======
 const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || '';
@@ -64,17 +18,40 @@ const ADMIN_CODE = process.env.ADMIN_CODE || '';
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 
-// Supabase admin client (server-side only)
+// ====== Supabase (server-side admin client) ======
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-// --- App ---
+// ====== App ======
 const app = express();
+
+// ====== CORS GUARD (đặt đầu tiên) ======
+const ALLOWED_ORIGINS = [
+  'https://phongnews.netlify.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+];
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin || 'https://phongnews.netlify.app');
+    res.header('Vary', 'Origin');
+    res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Credentials', 'true');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204); // Preflight
+  next();
+});
+
+// ====== Parsers & logger (đặt sau CORS, trước routes) ======
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(morgan('tiny'));
 
-// --- Mailer ---
+// ====== Mailer ======
 function getTransporter() {
   const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
   if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !SMTP_PASS) return null;
@@ -94,7 +71,7 @@ async function sendMail({ to, subject, text, html }) {
   });
 }
 
-// --- Helpers ---
+// ====== Helpers ======
 function signToken(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 }
@@ -110,31 +87,38 @@ function auth(req, res, next) {
   }
 }
 
-// --- Health ---
+// ====== Health & probe ======
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+app.post('/api/__cors_probe', (req, res) => res.json({ ok: true, path: '/api/__cors_probe' }));
 
-// --- Register ---
+// ====== Auth routes ======
+
+// Register
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password } = req.body || {};
     if (!name || !email || !password) return res.status(400).json({ message: 'Thiếu trường bắt buộc' });
 
     const lower = String(email).trim().toLowerCase();
-    // check existing
-    const { data: exist, error: e1 } = await supabase.from('users').select('id').eq('email', lower).maybeSingle();
+    const { data: exist, error: e1 } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', lower)
+      .maybeSingle();
     if (e1) throw e1;
     if (exist) return res.status(400).json({ message: 'Email đã tồn tại' });
 
     const pass_hash = await bcrypt.hash(password, 8);
-    const { error: e2 } = await supabase.from('users').insert({ name, email: lower, pass_hash, approved: false });
+    const { error: e2 } = await supabase
+      .from('users')
+      .insert({ name, email: lower, pass_hash, approved: false });
     if (e2) throw e2;
 
-    // notify admin
     if (ADMIN_EMAIL) {
       await sendMail({
         to: ADMIN_EMAIL,
         subject: 'Yêu cầu duyệt tài khoản mới',
-        text: `Người dùng mới: ${name} <${lower}>. Dùng code ADMIN_CODE để duyệt qua API /api/auth/approve.`
+        text: `Người dùng mới: ${name} <${lower}>. Dùng ADMIN_CODE để duyệt qua /api/auth/approve.`,
       });
     }
 
@@ -145,7 +129,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// --- Approve ---
+// Approve
 app.post('/api/auth/approve', async (req, res) => {
   try {
     const { email, code } = req.body || {};
@@ -163,12 +147,14 @@ app.post('/api/auth/approve', async (req, res) => {
   }
 });
 
-// --- Login ---
+// Login
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body || {};
     const lower = String(email || '').trim().toLowerCase();
-    const { data: u, error } = await supabase.from('users')
+
+    const { data: u, error } = await supabase
+      .from('users')
       .select('id,name,email,pass_hash,approved')
       .eq('email', lower)
       .maybeSingle();
@@ -187,25 +173,29 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// --- Forgot ---
+// Forgot
 app.post('/api/auth/forgot', async (req, res) => {
   try {
     const { email } = req.body || {};
     const lower = String(email || '').trim().toLowerCase();
-    const { data: u, error } = await supabase.from('users').select('id,email').eq('email', lower).maybeSingle();
+
+    const { data: u, error } = await supabase
+      .from('users')
+      .select('id,email')
+      .eq('email', lower)
+      .maybeSingle();
     if (error) throw error;
-    if (!u) return res.json({ message: 'Nếu email tồn tại, chúng tôi đã gửi hướng dẫn.' });
 
-    const token = crypto.randomBytes(24).toString('hex');
-    const expires_at = new Date(Date.now() + 1000 * 60 * 30).toISOString(); // 30m
-    const { error: e2 } = await supabase.from('resets').insert({ email: lower, token, expires_at });
-    if (e2) throw e2;
+    if (u) {
+      const token = crypto.randomBytes(24).toString('hex');
+      const expires_at = new Date(Date.now() + 1000 * 60 * 30).toISOString(); // 30 phút
+      const { error: e2 } = await supabase.from('resets').insert({ email: lower, token, expires_at });
+      if (e2) throw e2;
 
-    if (ADMIN_EMAIL) {
       await sendMail({
         to: lower,
         subject: 'Đặt lại mật khẩu',
-        text: `Mã đặt lại: ${token}\nHết hạn sau 30 phút.`
+        text: `Mã đặt lại: ${token}\nHết hạn sau 30 phút.`,
       });
     }
 
@@ -216,21 +206,29 @@ app.post('/api/auth/forgot', async (req, res) => {
   }
 });
 
-// --- Reset ---
+// Reset
 app.post('/api/auth/reset', async (req, res) => {
   try {
     const { email, token, newPassword } = req.body || {};
     const lower = String(email || '').trim().toLowerCase();
-    const { data: r, error } = await supabase.from('resets').select('id,expires_at').eq('email', lower).eq('token', token).maybeSingle();
+
+    const { data: r, error } = await supabase
+      .from('resets')
+      .select('id,expires_at')
+      .eq('email', lower)
+      .eq('token', token)
+      .maybeSingle();
     if (error) throw error;
     if (!r) return res.status(400).json({ message: 'Token không hợp lệ' });
-    if (new Date(r.expires_at).getTime() < Date.now()) return res.status(400).json({ message: 'Token đã hết hạn' });
+    if (new Date(r.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ message: 'Token đã hết hạn' });
+    }
 
     const pass_hash = await bcrypt.hash(newPassword || '', 8);
     const { error: e2 } = await supabase.from('users').update({ pass_hash }).eq('email', lower);
     if (e2) throw e2;
-    await supabase.from('resets').delete().eq('id', r.id);
 
+    await supabase.from('resets').delete().eq('id', r.id);
     res.json({ message: 'Đã đặt lại mật khẩu' });
   } catch (e) {
     console.error('[reset]', e);
@@ -238,15 +236,20 @@ app.post('/api/auth/reset', async (req, res) => {
   }
 });
 
-// --- Change Password (auth) ---
+// Change password (requires auth)
 app.post('/api/auth/change-password', auth, async (req, res) => {
   try {
     const { oldPassword, newPassword } = req.body || {};
     if (!newPassword) return res.status(400).json({ message: 'Thiếu mật khẩu mới' });
 
-    const { data: u, error } = await supabase.from('users').select('id,pass_hash').eq('id', req.user.uid).maybeSingle();
+    const { data: u, error } = await supabase
+      .from('users')
+      .select('id,pass_hash')
+      .eq('id', req.user.uid)
+      .maybeSingle();
     if (error) throw error;
     if (!u) return res.status(404).json({ message: 'Không tìm thấy người dùng' });
+
     const ok = await bcrypt.compare(oldPassword || '', u.pass_hash);
     if (!ok) return res.status(400).json({ message: 'Mật khẩu hiện tại không đúng' });
 
@@ -261,12 +264,11 @@ app.post('/api/auth/change-password', auth, async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Auth backend listening on :${PORT}`));
-const cors = require('cors');
-const ALLOWED_ORIGINS = [
-  'https://phongnews.netlify.app',
-  'http://localhost:5173',
-  'http://localhost:3000'
-];
+// ====== Error handler cuối (giữ đơn giản) ======
+app.use((err, req, res, next) => {
+  console.error('ERR:', err);
+  res.status(500).json({ message: 'Internal error' });
+});
 
-app.options('*', cors());
+// ====== Start ======
+app.listen(PORT, () => console.log(`Auth backend listening on :${PORT}`));
