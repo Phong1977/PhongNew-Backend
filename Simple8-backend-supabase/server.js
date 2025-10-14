@@ -26,7 +26,6 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
 // --- App ---
 const app = express();
 app.use(express.json());
-app.use(cors({ origin: (o, cb) => cb(null, true) }));
 app.use(morgan('tiny'));
 
 // --- Mailer ---
