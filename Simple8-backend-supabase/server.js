@@ -223,10 +223,4 @@ const ALLOWED_ORIGINS = [
   'http://localhost:3000'
 ];
 
-app.use(cors({
-  origin: (origin, cb) => (!origin || ALLOWED_ORIGINS.includes(origin)) ? cb(null, true) : cb(new Error('CORS')),
-  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization'],
-  credentials: true
-}));
 app.options('*', cors());
