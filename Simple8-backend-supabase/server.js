@@ -1,6 +1,7 @@
-// server.js — Supabase-backed auth API (CORS & anti-cache ready)
+// server.js — Supabase-backed auth API (CORS & anti-cache hardened)
 
-require('dotenv').config(); // an toàn khi chạy local; trên Render không bắt buộc
+// Không bắt buộc trên Render; tránh crash nếu không cài dotenv
+try { require('dotenv').config(); } catch (_) {}
 
 // ===== Imports =====
 const express = require('express');
@@ -25,10 +26,10 @@ const PERMISSIVE_CORS = String(process.env.PERMISSIVE_CORS || 'true').toLowerCas
 
 // ===== Guards =====
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-  console.warn('[WARN] Missing SUPABASE_URL or SERVICE_ROLE key — please set on Render.');
+  console.warn('[WARN] Missing SUPABASE_URL or SERVICE_ROLE key — set them in Render Environment.');
 }
 
-// ===== Supabase admin client (server-side) =====
+// ===== Supabase (server-side) =====
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
   auth: { persistSession: false, autoRefreshToken: false }
 });
@@ -36,7 +37,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
 // ===== App =====
 const app = express();
 
-// ===== Anti-cache for API responses (đặt rất sớm) =====
+// ===== Anti-cache (đặt rất sớm) =====
 app.use((req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -51,26 +52,31 @@ const ALLOWED_ORIGINS = [
   'http://localhost:3000'
 ];
 
-app.use((req, res, next) => {
+const setCorsHeaders = (req, res) => {
   if (PERMISSIVE_CORS) {
-    // Dễ dãi: mở cho tất cả origin (KHÔNG dùng credentials)
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Origin', '*'); // không credentials
   } else {
-    // Whitelist: chỉ các origin đã cho phép
     const origin = req.headers.origin;
     if (!origin || ALLOWED_ORIGINS.includes(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin || 'https://phongnews.netlify.app');
       res.setHeader('Vary', 'Origin');
-      res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-      // chỉ bật khi thật sự dùng cookies/credentials từ frontend:
+      // nếu thật sự dùng cookies/credentials từ FE thì mở dòng dưới:
       // res.setHeader('Access-Control-Allow-Credentials', 'true');
     }
   }
-  if (req.method === 'OPTIONS') return res.sendStatus(204); // trả preflight sớm
+  res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+};
+
+app.use((req, res, next) => {
+  setCorsHeaders(req, res);
   next();
+});
+
+// Bắt mọi preflight để chắc chắn trả 204
+app.options('*', (req, res) => {
+  setCorsHeaders(req, res);
+  return res.sendStatus(204);
 });
 
 // ===== Parsers & logger =====
@@ -86,39 +92,31 @@ function getTransporter() {
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
   if (!host || !user || !pass) return null;
-  return nodemailer.createTransport({
-    host, port, secure,
-    auth: { user, pass }
-  });
+  return nodemailer.createTransport({ host, port, secure, auth: { user, pass } });
 }
 
 async function sendMail({ to, subject, text, html }) {
   try {
     const tp = getTransporter();
-    if (!tp) return; // không có cấu hình SMTP thì bỏ qua
+    if (!tp) return;
     await tp.sendMail({
       from: process.env.MAIL_FROM || process.env.SMTP_USER,
       to, subject, text, html
     });
-  } catch (e) {
-    console.error('[mail]', e);
-  }
+  } catch (e) { console.error('[mail]', e); }
 }
 
 // ===== Helpers =====
 function signToken(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 }
-
 function auth(req, res, next) {
   const m = (req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
   if (!m) return res.status(401).json({ message: 'Missing token' });
   try {
     req.user = jwt.verify(m[1], JWT_SECRET);
     next();
-  } catch {
-    return res.status(401).json({ message: 'Invalid token' });
-  }
+  } catch { return res.status(401).json({ message: 'Invalid token' }); }
 }
 
 // ===== Health & probe =====
@@ -131,22 +129,17 @@ app.post('/api/__cors_probe', (req, res) => res.json({ ok: true, path: '/api/__c
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password } = req.body || {};
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: 'Thiếu trường bắt buộc' });
-    }
+    if (!name || !email || !password) return res.status(400).json({ message: 'Thiếu trường bắt buộc' });
     const lower = String(email).trim().toLowerCase();
 
-    const { data: exist, error: e1 } =
-      await supabase.from('users').select('id').eq('email', lower).maybeSingle();
+    const { data: exist, error: e1 } = await supabase.from('users').select('id').eq('email', lower).maybeSingle();
     if (e1) throw e1;
     if (exist) return res.status(400).json({ message: 'Email đã tồn tại' });
 
     const pass_hash = await bcrypt.hash(password, 8);
-    const { error: e2 } =
-      await supabase.from('users').insert({ name, email: lower, pass_hash, approved: false });
+    const { error: e2 } = await supabase.from('users').insert({ name, email: lower, pass_hash, approved: false });
     if (e2) throw e2;
 
-    // Thông báo cho admin (nếu cấu hình)
     if (ADMIN_EMAIL) {
       await sendMail({
         to: ADMIN_EMAIL,
@@ -154,12 +147,8 @@ app.post('/api/auth/register', async (req, res) => {
         text: `Người dùng mới: ${name} <${lower}>. Dùng ADMIN_CODE để duyệt qua /api/auth/approve.`
       });
     }
-
     res.json({ message: 'Đăng ký thành công. Vui lòng đợi admin phê duyệt.' });
-  } catch (e) {
-    console.error('[register]', e);
-    res.status(500).json({ message: 'Lỗi server' });
-  }
+  } catch (e) { console.error('[register]', e); res.status(500).json({ message: 'Lỗi server' }); }
 });
 
 // Approve
@@ -172,12 +161,8 @@ app.post('/api/auth/approve', async (req, res) => {
     const lower = String(email).trim().toLowerCase();
     const { error } = await supabase.from('users').update({ approved: true }).eq('email', lower);
     if (error) throw error;
-
     res.json({ message: 'Đã duyệt' });
-  } catch (e) {
-    console.error('[approve]', e);
-    res.status(500).json({ message: 'Lỗi server' });
-  }
+  } catch (e) { console.error('[approve]', e); res.status(500).json({ message: 'Lỗi server' }); }
 });
 
 // Login
@@ -188,10 +173,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (!lower || !password) return res.status(400).json({ message: 'Thiếu email hoặc mật khẩu' });
 
     const { data: u, error } =
-      await supabase.from('users')
-        .select('id,name,email,pass_hash,approved')
-        .eq('email', lower)
-        .maybeSingle();
+      await supabase.from('users').select('id,name,email,pass_hash,approved').eq('email', lower).maybeSingle();
     if (error) throw error;
     if (!u) return res.status(400).json({ message: 'Email hoặc mật khẩu sai' });
     if (!u.approved) return res.status(403).json({ message: 'Tài khoản chưa được duyệt' });
@@ -201,10 +183,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     const token = signToken({ uid: u.id, email: u.email, name: u.name });
     res.json({ token, user: { id: u.id, email: u.email, name: u.name } });
-  } catch (e) {
-    console.error('[login]', e);
-    res.status(500).json({ message: 'Lỗi server' });
-  }
+  } catch (e) { console.error('[login]', e); res.status(500).json({ message: 'Lỗi server' }); }
 });
 
 // Forgot
@@ -214,8 +193,7 @@ app.post('/api/auth/forgot', async (req, res) => {
     const lower = String(email || '').trim().toLowerCase();
     if (!lower) return res.status(400).json({ message: 'Thiếu email' });
 
-    const { data: u, error } =
-      await supabase.from('users').select('id,email').eq('email', lower).maybeSingle();
+    const { data: u, error } = await supabase.from('users').select('id,email').eq('email', lower).maybeSingle();
     if (error) throw error;
 
     if (u) {
@@ -223,19 +201,10 @@ app.post('/api/auth/forgot', async (req, res) => {
       const expires_at = new Date(Date.now() + 1000 * 60 * 30).toISOString(); // 30 phút
       const { error: e2 } = await supabase.from('resets').insert({ email: lower, token, expires_at });
       if (e2) throw e2;
-
-      await sendMail({
-        to: lower,
-        subject: 'Đặt lại mật khẩu',
-        text: `Mã đặt lại: ${token}\nHết hạn sau 30 phút.`
-      });
+      await sendMail({ to: lower, subject: 'Đặt lại mật khẩu', text: `Mã đặt lại: ${token}\nHết hạn sau 30 phút.` });
     }
-
     res.json({ message: 'Nếu email tồn tại, chúng tôi đã gửi hướng dẫn.' });
-  } catch (e) {
-    console.error('[forgot]', e);
-    res.status(500).json({ message: 'Lỗi server' });
-  }
+  } catch (e) { console.error('[forgot]', e); res.status(500).json({ message: 'Lỗi server' }); }
 });
 
 // Reset
@@ -243,21 +212,13 @@ app.post('/api/auth/reset', async (req, res) => {
   try {
     const { email, token, newPassword } = req.body || {};
     const lower = String(email || '').trim().toLowerCase();
-    if (!lower || !token || !newPassword) {
-      return res.status(400).json({ message: 'Thiếu thông tin' });
-    }
+    if (!lower || !token || !newPassword) return res.status(400).json({ message: 'Thiếu thông tin' });
 
     const { data: r, error } =
-      await supabase.from('resets')
-        .select('id,expires_at')
-        .eq('email', lower)
-        .eq('token', token)
-        .maybeSingle();
+      await supabase.from('resets').select('id,expires_at').eq('email', lower).eq('token', token).maybeSingle();
     if (error) throw error;
     if (!r) return res.status(400).json({ message: 'Token không hợp lệ' });
-    if (new Date(r.expires_at).getTime() < Date.now()) {
-      return res.status(400).json({ message: 'Token đã hết hạn' });
-    }
+    if (new Date(r.expires_at).getTime() < Date.now()) return res.status(400).json({ message: 'Token đã hết hạn' });
 
     const pass_hash = await bcrypt.hash(newPassword, 8);
     const { error: e2 } = await supabase.from('users').update({ pass_hash }).eq('email', lower);
@@ -265,13 +226,10 @@ app.post('/api/auth/reset', async (req, res) => {
 
     await supabase.from('resets').delete().eq('id', r.id);
     res.json({ message: 'Đã đặt lại mật khẩu' });
-  } catch (e) {
-    console.error('[reset]', e);
-    res.status(500).json({ message: 'Lỗi server' });
-  }
+  } catch (e) { console.error('[reset]', e); res.status(500).json({ message: 'Lỗi server' }); }
 });
 
-// Change password (auth)
+// Change password
 app.post('/api/auth/change-password', auth, async (req, res) => {
   try {
     const { oldPassword, newPassword } = req.body || {};
@@ -292,13 +250,10 @@ app.post('/api/auth/change-password', auth, async (req, res) => {
     if (e2) throw e2;
 
     res.json({ message: 'Đã đổi mật khẩu' });
-  } catch (e) {
-    console.error('[change-password]', e);
-    res.status(500).json({ message: 'Lỗi server' });
-  }
+  } catch (e) { console.error('[change-password]', e); res.status(500).json({ message: 'Lỗi server' }); }
 });
 
-// ===== Error handler (cuối cùng) =====
+// ===== Error handler =====
 app.use((err, req, res, next) => {
   console.error('ERR:', err);
   res.status(500).json({ message: 'Internal error' });
